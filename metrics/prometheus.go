@@ -117,7 +117,7 @@ type PrometheusCollector struct {
 // will be used instead.
 func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetrics container.MetricSet) *PrometheusCollector {
 	if f == nil {
-		f = DefaultContainerLabels
+		f = KubeletContainerLabels
 	}
 	c := &PrometheusCollector{
 		infoProvider:        i,
@@ -127,16 +127,18 @@ func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetri
 			Name:      "scrape_error",
 			Help:      "1 if there was an error while getting container metrics, 0 otherwise",
 		}),
-		containerMetrics: []containerMetric{
-			{
-				name:      "container_last_seen",
-				help:      "Last time a container was seen by the exporter",
-				valueType: prometheus.GaugeValue,
-				getValues: func(s *info.ContainerStats) metricValues {
-					return metricValues{{value: float64(time.Now().Unix())}}
+		/*
+			containerMetrics: []containerMetric{
+				{
+					name:      "container_last_seen",
+					help:      "Last time a container was seen by the exporter",
+					valueType: prometheus.GaugeValue,
+					getValues: func(s *info.ContainerStats) metricValues {
+						return metricValues{{value: float64(time.Now().Unix())}}
+					},
 				},
 			},
-		},
+		*/
 	}
 	if includedMetrics.Has(container.CpuUsageMetrics) {
 		c.containerMetrics = append(c.containerMetrics, []containerMetric{
@@ -852,17 +854,17 @@ func (c *PrometheusCollector) Describe(ch chan<- *prometheus.Desc) {
 	for _, cm := range c.containerMetrics {
 		ch <- cm.desc([]string{})
 	}
-	ch <- versionInfoDesc
-	ch <- machineInfoCoresDesc
-	ch <- machineInfoMemoryDesc
+	//ch <- versionInfoDesc
+	//ch <- machineInfoCoresDesc
+	//ch <- machineInfoMemoryDesc
 }
 
 // Collect fetches the stats from all containers and delivers them as
 // Prometheus metrics. It implements prometheus.PrometheusCollector.
 func (c *PrometheusCollector) Collect(ch chan<- prometheus.Metric) {
 	c.errors.Set(0)
-	c.collectMachineInfo(ch)
-	c.collectVersionInfo(ch)
+	//c.collectMachineInfo(ch)
+	//c.collectVersionInfo(ch)
 	c.collectContainersInfo(ch)
 	c.errors.Collect(ch)
 }
@@ -900,6 +902,43 @@ func DefaultContainerLabels(container *info.ContainerInfo) map[string]string {
 	return set
 }
 
+const (
+	KubernetesPodNameLabel       = "io.kubernetes.pod.name"
+	KubernetesPodNamespaceLabel  = "io.kubernetes.pod.namespace"
+	KubernetesPodUIDLabel        = "io.kubernetes.pod.uid"
+	KubernetesContainerNameLabel = "io.kubernetes.container.name"
+	KubernetesContainerTypeLabel = "io.kubernetes.container.type"
+)
+
+func KubeletContainerLabels(c *info.ContainerInfo) map[string]string {
+	// Prometheus requires that all metrics in the same family have the same labels,
+	// so we arrange to supply blank strings for missing labels
+	var name, image, podName, namespace, containerName string
+	if len(c.Aliases) > 0 {
+		name = c.Aliases[0]
+	}
+	image = c.Spec.Image
+	if v, ok := c.Spec.Labels[KubernetesPodNameLabel]; ok {
+		podName = v
+	}
+	if v, ok := c.Spec.Labels[KubernetesPodNamespaceLabel]; ok {
+		namespace = v
+	}
+	if v, ok := c.Spec.Labels[KubernetesContainerNameLabel]; ok {
+		containerName = v
+	}
+	set := map[string]string{
+		LabelID:          c.Name,
+		LabelName:        name,
+		LabelImage:       image,
+		"pod_name":       podName,
+		"namespace":      namespace,
+		"container_name": containerName,
+	}
+	return set
+
+}
+
 // BaseContainerLabels implements ContainerLabelsFunc. It only exports the
 // container name, first alias, and image name.
 func BaseContainerLabels(container *info.ContainerInfo) map[string]string {
@@ -935,29 +974,31 @@ func (c *PrometheusCollector) collectContainersInfo(ch chan<- prometheus.Metric)
 			values = append(values, containerLabels[l])
 		}
 
-		// Container spec
-		desc := prometheus.NewDesc("container_start_time_seconds", "Start time of the container since unix epoch in seconds.", labels, nil)
-		ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, float64(container.Spec.CreationTime.Unix()), values...)
+		/*
+			// Container spec
+			desc := prometheus.NewDesc("container_start_time_seconds", "Start time of the container since unix epoch in seconds.", labels, nil)
+			ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, float64(container.Spec.CreationTime.Unix()), values...)
 
-		if container.Spec.HasCpu {
-			desc = prometheus.NewDesc("container_spec_cpu_period", "CPU period of the container.", labels, nil)
-			ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, float64(container.Spec.Cpu.Period), values...)
-			if container.Spec.Cpu.Quota != 0 {
-				desc = prometheus.NewDesc("container_spec_cpu_quota", "CPU quota of the container.", labels, nil)
-				ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, float64(container.Spec.Cpu.Quota), values...)
+			if container.Spec.HasCpu {
+				desc = prometheus.NewDesc("container_spec_cpu_period", "CPU period of the container.", labels, nil)
+				ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, float64(container.Spec.Cpu.Period), values...)
+				if container.Spec.Cpu.Quota != 0 {
+					desc = prometheus.NewDesc("container_spec_cpu_quota", "CPU quota of the container.", labels, nil)
+					ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, float64(container.Spec.Cpu.Quota), values...)
+				}
+				desc := prometheus.NewDesc("container_spec_cpu_shares", "CPU share of the container.", labels, nil)
+				ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, float64(container.Spec.Cpu.Limit), values...)
+
 			}
-			desc := prometheus.NewDesc("container_spec_cpu_shares", "CPU share of the container.", labels, nil)
-			ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, float64(container.Spec.Cpu.Limit), values...)
-
-		}
-		if container.Spec.HasMemory {
-			desc := prometheus.NewDesc("container_spec_memory_limit_bytes", "Memory limit for the container.", labels, nil)
-			ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, specMemoryValue(container.Spec.Memory.Limit), values...)
-			desc = prometheus.NewDesc("container_spec_memory_swap_limit_bytes", "Memory swap limit for the container.", labels, nil)
-			ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, specMemoryValue(container.Spec.Memory.SwapLimit), values...)
-			desc = prometheus.NewDesc("container_spec_memory_reservation_limit_bytes", "Memory reservation limit for the container.", labels, nil)
-			ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, specMemoryValue(container.Spec.Memory.Reservation), values...)
-		}
+			if container.Spec.HasMemory {
+				desc := prometheus.NewDesc("container_spec_memory_limit_bytes", "Memory limit for the container.", labels, nil)
+				ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, specMemoryValue(container.Spec.Memory.Limit), values...)
+				desc = prometheus.NewDesc("container_spec_memory_swap_limit_bytes", "Memory swap limit for the container.", labels, nil)
+				ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, specMemoryValue(container.Spec.Memory.SwapLimit), values...)
+				desc = prometheus.NewDesc("container_spec_memory_reservation_limit_bytes", "Memory reservation limit for the container.", labels, nil)
+				ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, specMemoryValue(container.Spec.Memory.Reservation), values...)
+			}
+		*/
 
 		// Now for the actual metrics
 		if len(container.Stats) == 0 {

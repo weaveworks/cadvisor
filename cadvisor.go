@@ -157,7 +157,7 @@ func main() {
 		glog.Fatalf("Failed to register HTTP handlers: %v", err)
 	}
 
-	containerLabelFunc := metrics.DefaultContainerLabels
+	containerLabelFunc := metrics.KubeletContainerLabels
 	if !*storeContainerLabels {
 		containerLabelFunc = metrics.BaseContainerLabels
 	}
@@ -239,23 +239,23 @@ func createCollectorHttpClient(collectorCert, collectorKey string) http.Client {
 func toIncludedMetrics(ignoreMetrics container.MetricSet) container.MetricSet {
 	set := container.MetricSet{}
 	allMetrics := []container.MetricKind{
-		container.CpuUsageMetrics,
+		//container.CpuUsageMetrics,
 		container.ProcessSchedulerMetrics,
-		container.PerCpuUsageMetrics,
-		container.MemoryUsageMetrics,
-		container.CpuLoadMetrics,
-		container.DiskIOMetrics,
-		container.DiskUsageMetrics,
-		container.NetworkUsageMetrics,
-		container.NetworkTcpUsageMetrics,
-		container.NetworkUdpUsageMetrics,
-		container.AcceleratorUsageMetrics,
-		container.AppMetrics,
+		//container.PerCpuUsageMetrics,
+		//container.MemoryUsageMetrics,
+		//container.CpuLoadMetrics,
+		//container.DiskIOMetrics,
+		//container.DiskUsageMetrics,
+		//container.NetworkUsageMetrics,
+		//container.NetworkTcpUsageMetrics,
+		//container.NetworkUdpUsageMetrics,
+		//container.AcceleratorUsageMetrics,
+		//container.AppMetrics,
 	}
 	for _, metric := range allMetrics {
-		if !ignoreMetrics.Has(metric) {
-			set[metric] = struct{}{}
-		}
+		//if !ignoreMetrics.Has(metric) {
+		set[metric] = struct{}{}
+		//}
 	}
 	return set
 }

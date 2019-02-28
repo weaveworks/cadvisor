@@ -44,7 +44,7 @@ type Handler struct {
 	rootFs          string
 	pid             int
 	includedMetrics container.MetricSet
-	pidMetricsCache map[int]*info.CpuSchedstat
+	tidMetricsCache map[int]*info.CpuSchedstat
 }
 
 func NewHandler(cgroupManager cgroups.Manager, rootFs string, pid int, includedMetrics container.MetricSet) *Handler {
@@ -53,7 +53,7 @@ func NewHandler(cgroupManager cgroups.Manager, rootFs string, pid int, includedM
 		rootFs:          rootFs,
 		pid:             pid,
 		includedMetrics: includedMetrics,
-		pidMetricsCache: make(map[int]*info.CpuSchedstat),
+		tidMetricsCache: make(map[int]*info.CpuSchedstat),
 	}
 }
 
@@ -74,7 +74,7 @@ func (h *Handler) GetStats() (*info.ContainerStats, error) {
 		if err != nil {
 			glog.V(4).Infof("Could not get PIDs for container %d: %v", h.pid, err)
 		} else {
-			stats.Cpu.Schedstat, err = schedulerStatsFromProcs(h.rootFs, pids, h.pidMetricsCache)
+			stats.Cpu.Schedstat, err = schedulerStatsFromProcs(h.rootFs, pids, h.tidMetricsCache)
 			if err != nil {
 				glog.V(4).Infof("Unable to get Process Scheduler Stats: %v", err)
 			}
@@ -132,43 +132,54 @@ func (h *Handler) GetStats() (*info.ContainerStats, error) {
 	return stats, nil
 }
 
-func schedulerStatsFromProcs(rootFs string, pids []int, pidMetricsCache map[int]*info.CpuSchedstat) (info.CpuSchedstat, error) {
+func schedulerStatsFromProcs(rootFs string, pids []int, tidMetricsCache map[int]*info.CpuSchedstat) (info.CpuSchedstat, error) {
 	for _, pid := range pids {
-		f, err := os.Open(path.Join(rootFs, "proc", strconv.Itoa(pid), "schedstat"))
+		tasks, err := ioutil.ReadDir(path.Join(rootFs, "proc", strconv.Itoa(pid), "task"))
 		if err != nil {
-			return info.CpuSchedstat{}, fmt.Errorf("couldn't open scheduler statistics for process %d: %v", pid, err)
+			return info.CpuSchedstat{}, fmt.Errorf("couldn't read task directory for process %d: %v", pid, err)
 		}
-		defer f.Close()
-		contents, err := ioutil.ReadAll(f)
-		if err != nil {
-			return info.CpuSchedstat{}, fmt.Errorf("couldn't read scheduler statistics for process %d: %v", pid, err)
-		}
-		rawMetrics := bytes.Split(bytes.TrimRight(contents, "\n"), []byte(" "))
-		if len(rawMetrics) != 3 {
-			return info.CpuSchedstat{}, fmt.Errorf("unexpected number of metrics in schedstat file for process %d", pid)
-		}
-		cacheEntry, ok := pidMetricsCache[pid]
-		if !ok {
-			cacheEntry = &info.CpuSchedstat{}
-			pidMetricsCache[pid] = cacheEntry
-		}
-		for i, rawMetric := range rawMetrics {
-			metric, err := strconv.ParseUint(string(rawMetric), 10, 64)
+
+		for _, task := range tasks {
+			tid, err := strconv.Atoi(task.Name())
 			if err != nil {
-				return info.CpuSchedstat{}, fmt.Errorf("parsing error while reading scheduler statistics for process: %d: %v", pid, err)
+				return info.CpuSchedstat{}, fmt.Errorf("couldn't convert task name %s to numeric tid: %v", task.Name(), err)
 			}
-			switch i {
-			case 0:
-				cacheEntry.RunTime = metric
-			case 1:
-				cacheEntry.RunqueueTime = metric
-			case 2:
-				cacheEntry.RunPeriods = metric
+			f, err := os.Open(path.Join(rootFs, "proc", strconv.Itoa(pid), "task", task.Name(), "schedstat"))
+			if err != nil {
+				return info.CpuSchedstat{}, fmt.Errorf("couldn't open scheduler statistics for task %s of process %d: %v", task.Name(), pid, err)
+			}
+			defer f.Close()
+			contents, err := ioutil.ReadAll(f)
+			if err != nil {
+				return info.CpuSchedstat{}, fmt.Errorf("couldn't read scheduler statistics for task %d: %v", tid, err)
+			}
+			rawMetrics := bytes.Split(bytes.TrimRight(contents, "\n"), []byte(" "))
+			if len(rawMetrics) != 3 {
+				return info.CpuSchedstat{}, fmt.Errorf("unexpected number of metrics in schedstat file for task %d", tid)
+			}
+			cacheEntry, ok := tidMetricsCache[tid]
+			if !ok {
+				cacheEntry = &info.CpuSchedstat{}
+				tidMetricsCache[tid] = cacheEntry
+			}
+			for i, rawMetric := range rawMetrics {
+				metric, err := strconv.ParseUint(string(rawMetric), 10, 64)
+				if err != nil {
+					return info.CpuSchedstat{}, fmt.Errorf("parsing error while reading scheduler statistics for task: %d: %v", tid, err)
+				}
+				switch i {
+				case 0:
+					cacheEntry.RunTime = metric
+				case 1:
+					cacheEntry.RunqueueTime = metric
+				case 2:
+					cacheEntry.RunPeriods = metric
+				}
 			}
 		}
 	}
 	schedstats := info.CpuSchedstat{}
-	for _, v := range pidMetricsCache {
+	for _, v := range tidMetricsCache {
 		schedstats.RunPeriods += v.RunPeriods
 		schedstats.RunqueueTime += v.RunqueueTime
 		schedstats.RunTime += v.RunTime
